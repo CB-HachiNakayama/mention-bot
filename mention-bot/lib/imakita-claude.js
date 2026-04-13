@@ -1,23 +1,19 @@
 /**
  * /imakita コマンド用
  * スレッド全文を読んでCanBeeメンバーへの要件を洗い出す
+ * Overloadedエラー時は自動リトライ（最大3回）
  */
 
 import { resolveDisplayName, resolveMessageMentions } from './imakita-search.js';
 
-/**
- * スレッドメッセージを整形してClaudeで要件洗い出し
- */
 export async function summarizeThreadWithClaude(messages, myDisplayName) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) throw new Error('ANTHROPIC_API_KEY is not set');
 
-  // メッセージを読みやすい形に整形
   const formatted = await Promise.all(
     messages.map(async (msg, i) => {
       const senderName = await resolveDisplayName(msg.user ?? '不明');
       const text = await resolveMessageMentions(msg.text ?? '');
-      const ts = new Date(parseFloat(msg.ts) * 1000);
       const label = i === 0 ? '最初の投稿' : `返信${i}`;
       const timeStr = formatTs(msg.ts);
       return `[${label} / ${timeStr} / ${senderName}]\n${text}`;
@@ -70,25 +66,45 @@ export async function summarizeThreadWithClaude(messages, myDisplayName) {
 【スレッド全文（${messages.length}件）】
 ${threadText}`;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 4096,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  // Overloaded時は自動リトライ（最大3回、待機時間を徐々に増やす）
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 4096,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
 
-  const data = await res.json();
-  if (data.error) throw new Error(`Claude API error: ${data.error.message}`);
+    const data = await res.json();
 
-  const fullText = data.content?.[0]?.text ?? '要約を生成できませんでした。';
-  return splitMessage(fullText);
+    // Overloadedなら待ってリトライ
+    if (data.error?.type === 'overloaded_error') {
+      if (attempt < maxRetries) {
+        const waitMs = attempt * 5000; // 5秒 → 10秒 → 15秒
+        console.log(`Claude overloaded, retry ${attempt}/${maxRetries} after ${waitMs}ms`);
+        await sleep(waitMs);
+        continue;
+      }
+      throw new Error('Claude APIが混雑しています。しばらく待ってから再度お試しください🙏');
+    }
+
+    if (data.error) throw new Error(`Claude API error: ${data.error.message}`);
+
+    const fullText = data.content?.[0]?.text ?? '要約を生成できませんでした。';
+    return splitMessage(fullText);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function splitMessage(text, limit = 2900) {
@@ -111,7 +127,6 @@ function splitMessage(text, limit = 2900) {
 function formatTs(ts) {
   if (!ts) return '';
   const d = new Date(parseFloat(ts) * 1000);
-  // JST変換
   const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   const m = jst.getUTCMonth() + 1;
   const day = jst.getUTCDate();
