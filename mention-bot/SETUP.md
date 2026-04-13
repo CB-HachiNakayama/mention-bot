@@ -1,3 +1,4 @@
+[SETUP.md](https://github.com/user-attachments/files/26677526/SETUP.md)
 # メンションBot セットアップガイド
 
 Slackのスラッシュコマンド `/mention-check` で自分へのメンションを要約してDMに通知するBotです。
