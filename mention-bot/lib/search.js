@@ -1,9 +1,6 @@
 /**
  * Slack Search API でユーザーへのメンションを検索する
  * DM・プライベート・コネクトチャンネルも含む
- *
- * 注意: search.messages はユーザートークンが必要（Bot トークン不可）
- * → Slack App で "User Token Scopes" に search:read を追加すること
  */
 export async function searchMentions({ userId, since, until }) {
   const token = process.env.SLACK_USER_TOKEN;
@@ -35,14 +32,18 @@ export async function searchMentions({ userId, since, until }) {
 
   const messages = data.messages?.matches ?? [];
 
-  // スレッドの内容を取得して要約に使う
+  // ユーザー表示名のキャッシュ
+  const userCache = {};
+
   const enriched = await Promise.all(
     messages.map(async (msg) => {
       const thread = await fetchThreadContext(msg, token);
+      const displayName = await getUserDisplayName(msg.user, token, userCache);
       return {
         channel: msg.channel?.name ?? 'DM',
         channelId: msg.channel?.id,
-        user: msg.username ?? msg.user,
+        user: displayName,
+        userId: msg.user,
         text: msg.text,
         ts: msg.ts,
         permalink: msg.permalink,
@@ -53,9 +54,36 @@ export async function searchMentions({ userId, since, until }) {
     })
   );
 
-  // 同一スレッドをまとめる（thread_ts が同じものを1件に集約）
   const grouped = groupByThread(enriched);
   return grouped;
+}
+
+// ユーザーIDからSlackの表示名を取得する
+async function getUserDisplayName(userId, token, cache) {
+  if (!userId) return 'unknown';
+  if (cache[userId]) return cache[userId];
+
+  try {
+    const res = await fetch(
+      `https://slack.com/api/users.info?user=${userId}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    const data = await res.json();
+    if (!data.ok) return userId;
+
+    const profile = data.user?.profile;
+    // 表示名の優先順位: display_name > real_name > name
+    const name =
+      profile?.display_name ||
+      profile?.real_name ||
+      data.user?.name ||
+      userId;
+
+    cache[userId] = name;
+    return name;
+  } catch {
+    return userId;
+  }
 }
 
 async function fetchThreadContext(msg, token) {
@@ -70,9 +98,7 @@ async function fetchThreadContext(msg, token) {
 
     const res = await fetch(
       `https://slack.com/api/conversations.replies?${params.toString()}`,
-      {
-        headers: { Authorization: `Bearer ${token}` },
-      }
+      { headers: { Authorization: `Bearer ${token}` } }
     );
     const data = await res.json();
     if (!data.ok) return [];
