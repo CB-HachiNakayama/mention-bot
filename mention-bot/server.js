@@ -5,6 +5,7 @@ import { summarizeWithClaude } from './lib/claude.js';
 import { parsePeriod } from './lib/parse-period.js';
 import { getThreadMessages, resolveDisplayName } from './lib/imakita-search.js';
 import { summarizeThreadWithClaude } from './lib/imakita-claude.js';
+import { parseSlackThreadUrl } from './lib/parse-thread-url.js';
 
 const app = express();
 app.use(express.urlencoded({ extended: true }));
@@ -62,6 +63,7 @@ app.post('/api/slack', async (req, res) => {
 
 // -----------------------------------------------
 // /imakita コマンド（今北産業：スレッド要件洗い出し）
+// 使い方: /imakita https://xxx.slack.com/archives/C123/p1234567890
 // -----------------------------------------------
 app.post('/api/imakita', async (req, res) => {
   if (req.body?.type === 'url_verification') {
@@ -71,17 +73,27 @@ app.post('/api/imakita', async (req, res) => {
   const isValid = await verifySlackRequest(req);
   if (!isValid) return res.status(401).json({ error: 'Invalid signature' });
 
-  const { user_id, channel_id, thread_ts, response_url } = req.body;
+  const { user_id, text, response_url } = req.body;
 
-  // スレッド外から打たれた場合
-  if (!thread_ts) {
+  // URLが渡されていない場合
+  const threadUrl = text?.trim();
+  if (!threadUrl) {
     return res.status(200).json({
       response_type: 'ephemeral',
-      text: '⚠️ スレッド内で打ってください！\n要約したいスレッドの返信欄で `/imakita` を打つと動きます。',
+      text: '⚠️ スレッドのURLを指定してください。\n使い方: `/imakita https://xxx.slack.com/archives/C123/p1234567890`\n\nSlackでスレッドを開いて「リンクをコピー」したURLを貼り付けてください。',
     });
   }
 
-  // 即時レスポンス（3秒以内に返さないとタイムアウト）
+  // URLをパース
+  const parsed = parseSlackThreadUrl(threadUrl);
+  if (!parsed) {
+    return res.status(200).json({
+      response_type: 'ephemeral',
+      text: '⚠️ SlackのスレッドURLを正しく認識できませんでした。\nスレッドを開いて「・・・」→「リンクをコピー」で取得したURLを貼り付けてください。',
+    });
+  }
+
+  // 即時レスポンス
   res.status(200).json({
     response_type: 'ephemeral',
     text: '🔍 スレッドを全部読んでいます...',
@@ -89,7 +101,7 @@ app.post('/api/imakita', async (req, res) => {
 
   (async () => {
     try {
-      const messages = await getThreadMessages(channel_id, thread_ts);
+      const messages = await getThreadMessages(parsed.channelId, parsed.threadTs);
 
       if (!messages || messages.length === 0) {
         await postToSlack(response_url, {
