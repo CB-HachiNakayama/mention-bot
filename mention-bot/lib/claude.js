@@ -1,5 +1,6 @@
 /**
  * Claude API でメンション一覧を要約する
+ * Overloadedエラー時は自動リトライ（最大3回）
  */
 export async function summarizeWithClaude(mentions, userName, label) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -15,9 +16,9 @@ export async function summarizeWithClaude(mentions, userName, label) {
               .map((t) => `  ${t.user}: ${t.text.slice(0, 300)}`)
               .join('\n')
           : '';
-      return `${i + 1}. チャンネル: #${m.channel} / 送信者: ${m.user} (ID: ${m.userId ?? ''}) / ${formatTs(m.ts)}
+      return `${i + 1}. チャンネル: #${m.channel} / 送信者: ${m.user} / ${formatTs(m.ts)}
 メッセージ: ${m.text.slice(0, 400)}${threadSummary}
-permalink: ${m.permalink}`;
+リンク: ${m.permalink}`;
     })
     .join('\n\n');
 
@@ -28,47 +29,63 @@ permalink: ${m.permalink}`;
 - スレッドの内容をしっかり読み込んで、「${userName}さんに何が求められているか」を具体的に書く
 - 「何かの相談」「確認をお願いされています」のような抽象的な表現は禁止
 - 具体的なタスク・確認事項・対応内容を箇条書きで書く
-- 対応不要な連絡（報告・情報共有のみ）はその旨を明記する
+- 例: 「ハドルで相談したい」ではなく「レースゲームのモチーフリストについて、企画確認前にハドルで共有したい（スプレッドシートのリンクあり）」のように詳しく
+- 対応が不要な連絡（報告・情報共有のみ）はその旨を明記する
 
-## 出力フォーマット（このフォーマット以外の文字は一切出力しない）
+## 出力フォーマット（このフォーマット以外の文字は出力しない）
 
 :bell: *${userName} さんへのメンション — ${label}*
 
-番号. 
-:tv:: <permalink|#チャンネル名のスレッド>
-:clock2:: 日時
-:bust_in_silhouette:: @送信者名
-:speech_balloon: 要約:
+番号. *#チャンネル名 / 送信者名｜日時*
+:speech_balloon: *求められていること:*
 • 具体的なタスクや確認事項1
 • 具体的なタスクや確認事項2
+→ リンク
 
 ---
-
-※ permalinkをそのまま <permalink|#チャンネル名のスレッド> の形式で使うこと
-※ 送信者名はSlackのユーザー名をそのまま使うこと
 
 ## メンション一覧
 ${mentionsText}`;
 
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
-    method: 'POST',
-    headers: {
-      'x-api-key': apiKey,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify({
-      model: 'claude-sonnet-4-20250514',
-      max_tokens: 3000,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
+  // Overloaded時は自動リトライ（最大3回、待機時間を徐々に増やす）
+  const maxRetries = 3;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const res = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 3000,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    });
 
-  const data = await res.json();
-  if (data.error) throw new Error(`Claude API error: ${data.error.message}`);
+    const data = await res.json();
 
-  const fullText = data.content?.[0]?.text ?? '要約を生成できませんでした。';
-  return splitMessage(fullText);
+    // Overloadedなら待ってリトライ
+    if (data.error?.type === 'overloaded_error') {
+      if (attempt < maxRetries) {
+        const waitMs = attempt * 5000; // 5秒 → 10秒 → 15秒
+        console.log(`Claude overloaded, retry ${attempt}/${maxRetries} after ${waitMs}ms`);
+        await sleep(waitMs);
+        continue;
+      }
+      throw new Error('Claude APIが混雑しています。しばらく待ってから再度お試しください🙏');
+    }
+
+    if (data.error) throw new Error(`Claude API error: ${data.error.message}`);
+
+    const fullText = data.content?.[0]?.text ?? '要約を生成できませんでした。';
+    return splitMessage(fullText);
+  }
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function splitMessage(text, limit = 2900) {
