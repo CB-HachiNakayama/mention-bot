@@ -1,133 +1,102 @@
-import express from 'express';
-import { verifySlackRequest } from './lib/slack-verify.js';
-import { searchMentions } from './lib/search.js';
-import { summarizeWithClaude } from './lib/claude.js';
-import { parsePeriod } from './lib/parse-period.js';
-import { getThreadMessages, resolveDisplayName } from './lib/imakita-search.js';
-import { summarizeThreadWithClaude } from './lib/imakita-claude.js';
+/**
+ * Slack Search API でユーザーへのメンションを検索する
+ * DM・プライベート・コネクトチャンネルも含む
+ *
+ * 注意: search.messages はユーザートークンが必要（Bot トークン不可）
+ * → Slack App で "User Token Scopes" に search:read を追加すること
+ */
+export async function searchMentions({ userId, since, until }) {
+  const token = process.env.SLACK_USER_TOKEN;
+  if (!token) throw new Error('SLACK_USER_TOKEN is not set');
 
-const app = express();
-app.use(express.urlencoded({ extended: true }));
-app.use(express.json());
-
-app.get('/', (req, res) => res.send('mention-bot is running!'));
-
-// -----------------------------------------------
-// /matome コマンド（メンション要約）
-// -----------------------------------------------
-app.post('/api/slack', async (req, res) => {
-  if (req.body?.type === 'url_verification') {
-    return res.status(200).json({ challenge: req.body.challenge });
-  }
-
-  const isValid = await verifySlackRequest(req);
-  if (!isValid) return res.status(401).json({ error: 'Invalid signature' });
-
-  const { user_id, user_name, text, response_url } = req.body;
-
-  res.status(200).json({
-    response_type: 'ephemeral',
-    text: `⏳ <@${user_id}> さんのメンションを検索中です...`,
+  const query = `<@${userId}>`;
+  const params = new URLSearchParams({
+    query,
+    sort: 'timestamp',
+    sort_dir: 'desc',
+    count: '20',
   });
 
-  (async () => {
-    try {
-      const { since, until, label } = parsePeriod(text?.trim());
-      const mentions = await searchMentions({ userId: user_id, since, until });
+  if (since) params.set('oldest', String(since));
+  if (until) params.set('latest', String(until));
 
-      if (mentions.length === 0) {
-        await postToSlack(response_url, {
-          response_type: 'ephemeral',
-          text: `✅ ${label}のメンションは見つかりませんでした。`,
-        });
-        return;
-      }
-
-      const chunks = await summarizeWithClaude(mentions, user_name, label);
-      for (const chunk of chunks) {
-        await postToSlack(response_url, {
-          response_type: 'ephemeral',
-          text: chunk,
-        });
-      }
-    } catch (err) {
-      console.error(err);
-      await postToSlack(response_url, {
-        response_type: 'ephemeral',
-        text: `❌ エラーが発生しました: ${err.message}`,
-      });
+  const res = await fetch(
+    `https://slack.com/api/search.messages?${params.toString()}`,
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
     }
-  })();
-});
+  );
 
-// -----------------------------------------------
-// /imakita コマンド（今北産業：スレッド要件洗い出し）
-// -----------------------------------------------
-app.post('/api/imakita', async (req, res) => {
-  if (req.body?.type === 'url_verification') {
-    return res.status(200).json({ challenge: req.body.challenge });
-  }
+  const data = await res.json();
+  if (!data.ok) throw new Error(`Slack API error: ${data.error}`);
 
-  const isValid = await verifySlackRequest(req);
-  if (!isValid) return res.status(401).json({ error: 'Invalid signature' });
+  const messages = data.messages?.matches ?? [];
 
-  const { user_id, channel_id, thread_ts, response_url } = req.body;
+  // スレッドの内容を取得して要約に使う
+  const enriched = await Promise.all(
+    messages.map(async (msg) => {
+      const thread = await fetchThreadContext(msg, token);
+      return {
+        channel: msg.channel?.name ?? 'DM',
+        channelId: msg.channel?.id,
+        user: msg.username ?? msg.user,
+        text: msg.text,
+        ts: msg.ts,
+        permalink: msg.permalink,
+        threadTs: msg.thread_ts,
+        replyCount: msg.reply_count ?? 0,
+        thread,
+      };
+    })
+  );
 
-  // スレッド外から打たれた場合
-  if (!thread_ts) {
-    return res.status(200).json({
-      response_type: 'ephemeral',
-      text: '⚠️ スレッド内で打ってください！\n要約したいスレッドの返信欄で `/imakita` を打つと動きます。',
-    });
-  }
-
-  // 即時レスポンス（3秒以内に返さないとタイムアウト）
-  res.status(200).json({
-    response_type: 'ephemeral',
-    text: '🔍 スレッドを全部読んでいます...',
-  });
-
-  (async () => {
-    try {
-      const messages = await getThreadMessages(channel_id, thread_ts);
-
-      if (!messages || messages.length === 0) {
-        await postToSlack(response_url, {
-          response_type: 'ephemeral',
-          text: '⚠️ スレッドのメッセージが取得できませんでした。',
-        });
-        return;
-      }
-
-      const myDisplayName = await resolveDisplayName(user_id);
-      const chunks = await summarizeThreadWithClaude(messages, myDisplayName);
-
-      for (const chunk of chunks) {
-        await postToSlack(response_url, {
-          response_type: 'ephemeral',
-          text: chunk,
-        });
-      }
-    } catch (err) {
-      console.error('imakita error:', err);
-      await postToSlack(response_url, {
-        response_type: 'ephemeral',
-        text: `❌ エラーが発生しました: ${err.message}`,
-      });
-    }
-  })();
-});
-
-// -----------------------------------------------
-// 共通ユーティリティ
-// -----------------------------------------------
-async function postToSlack(responseUrl, payload) {
-  await fetch(responseUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
+  // 同一スレッドをまとめる（thread_ts が同じものを1件に集約）
+  const grouped = groupByThread(enriched);
+  return grouped;
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`mention-bot listening on port ${PORT}`));
+async function fetchThreadContext(msg, token) {
+  if (!msg.thread_ts || !msg.channel?.id) return [];
+
+  try {
+    const params = new URLSearchParams({
+      channel: msg.channel.id,
+      ts: msg.thread_ts,
+      limit: '10',
+    });
+
+    const res = await fetch(
+      `https://slack.com/api/conversations.replies?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    );
+    const data = await res.json();
+    if (!data.ok) return [];
+
+    return (data.messages ?? []).map((m) => ({
+      user: m.username ?? m.user,
+      text: m.text,
+      ts: m.ts,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+function groupByThread(messages) {
+  const seen = new Set();
+  const result = [];
+
+  for (const msg of messages) {
+    const key = msg.threadTs ?? msg.ts;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(msg);
+  }
+
+  return result;
+}
