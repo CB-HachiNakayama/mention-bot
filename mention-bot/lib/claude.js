@@ -15,9 +15,9 @@ export async function summarizeWithClaude(mentions, userName, label) {
               .map((t) => `  ${t.user}: ${t.text.slice(0, 300)}`)
               .join('\n')
           : '';
-      return `${i + 1}. チャンネル: #${m.channel} / 送信者: ${m.user} / ${formatTs(m.ts)}
+      return `${i + 1}. チャンネル: #${m.channel} / 送信者: ${m.user} (ID: ${m.userId ?? ''}) / ${formatTs(m.ts)}
 メッセージ: ${m.text.slice(0, 400)}${threadSummary}
-リンク: ${m.permalink}`;
+permalink: ${m.permalink}`;
     })
     .join('\n\n');
 
@@ -28,20 +28,23 @@ export async function summarizeWithClaude(mentions, userName, label) {
 - スレッドの内容をしっかり読み込んで、「${userName}さんに何が求められているか」を具体的に書く
 - 「何かの相談」「確認をお願いされています」のような抽象的な表現は禁止
 - 具体的なタスク・確認事項・対応内容を箇条書きで書く
-- 例: 「ハドルで相談したい」ではなく「レースゲームのモチーフリストについて、企画確認前にハドルで共有したい（スプレッドシートのリンクあり）」のように詳しく
-- 対応が不要な連絡（報告・情報共有のみ）はその旨を明記する
+- 対応不要な連絡（報告・情報共有のみ）はその旨を明記する
 
-## 出力フォーマット（このフォーマット以外の文字は出力しない）
+## 出力フォーマット（このフォーマット以外の文字は一切出力しない）
 
 :bell: *${userName} さんへのメンション — ${label}*
 
-番号. *#チャンネル名 / 送信者名｜日時*
-:speech_balloon: *求められていること:*
+番号. :tv: CH: <permalink|#チャンネル名のスレッド>
+:clock2: 投稿日: 日時
+:bust_in_silhouette: 関係者: @送信者名
+:speech_balloon: 要約:
 • 具体的なタスクや確認事項1
 • 具体的なタスクや確認事項2
-→ リンク
 
 ---
+
+※ permalinkをそのまま <permalink|#チャンネル名のスレッド> の形式で使うこと
+※ 送信者名はSlackのユーザー名をそのまま使うこと
 
 ## メンション一覧
 ${mentionsText}`;
