@@ -35,9 +35,9 @@ permalink: ${m.permalink}`;
 :bell: *${userName} さんへのメンション — ${label}*
 
 番号. 
-:tv: CH: <permalink|#チャンネル名のスレッド>
-:clock2: 投稿日: 日時
-:bust_in_silhouette: 関係者: @送信者名
+:tv:: <permalink|#チャンネル名のスレッド>
+:clock2:: 日時
+:bust_in_silhouette:: @送信者名
 :speech_balloon: 要約:
 • 具体的なタスクや確認事項1
 • 具体的なタスクや確認事項2
