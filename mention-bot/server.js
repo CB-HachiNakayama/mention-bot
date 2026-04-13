@@ -8,31 +8,23 @@ const app = express();
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-app.get('/', (req, res) => {
-  res.send('mention-bot is running!');
-});
+app.get('/', (req, res) => res.send('mention-bot is running!'));
 
 app.post('/api/slack', async (req, res) => {
-  // Slack の URL verification challenge
   if (req.body?.type === 'url_verification') {
     return res.status(200).json({ challenge: req.body.challenge });
   }
 
-  // Slack リクエスト署名の検証
   const isValid = await verifySlackRequest(req);
-  if (!isValid) {
-    return res.status(401).json({ error: 'Invalid signature' });
-  }
+  if (!isValid) return res.status(401).json({ error: 'Invalid signature' });
 
   const { user_id, user_name, text, response_url } = req.body;
 
-  // 即時 200 を返す（Slack は 3 秒以内のレスポンスを要求）
   res.status(200).json({
     response_type: 'ephemeral',
-    text: `⏳ <@${user_id}> さんのメンションを検索中です... しばらくお待ちください`,
+    text: `⏳ <@${user_id}> さんのメンションを検索中です...`,
   });
 
-  // 非同期で処理を続行
   (async () => {
     try {
       const { since, until, label } = parsePeriod(text?.trim());
@@ -46,12 +38,15 @@ app.post('/api/slack', async (req, res) => {
         return;
       }
 
-      const summary = await summarizeWithClaude(mentions, user_name, label);
+      const chunks = await summarizeWithClaude(mentions, user_name, label);
 
-      await postToSlack(response_url, {
-        response_type: 'ephemeral',
-        text: summary,
-      });
+      // 複数チャンクを順番に送信
+      for (const chunk of chunks) {
+        await postToSlack(response_url, {
+          response_type: 'ephemeral',
+          text: chunk,
+        });
+      }
     } catch (err) {
       console.error(err);
       await postToSlack(response_url, {
@@ -71,6 +66,4 @@ async function postToSlack(responseUrl, payload) {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`mention-bot listening on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`mention-bot listening on port ${PORT}`));
