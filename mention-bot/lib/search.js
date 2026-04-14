@@ -14,7 +14,7 @@ export async function searchMentions({ userId, since, until }) {
     query,
     sort: 'timestamp',
     sort_dir: 'desc',
-    count: '20',
+    count: '50', // 最大50件
   });
 
   if (since) params.set('oldest', String(since));
