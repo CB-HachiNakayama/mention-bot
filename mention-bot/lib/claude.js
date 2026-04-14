@@ -16,9 +16,10 @@ export async function summarizeWithClaude(mentions, userName, label) {
               .map((t) => `  ${t.user}: ${t.text.slice(0, 300)}`)
               .join('\n')
           : '';
-      return `${i + 1}. チャンネル: #${m.channel} / 送信者: ${m.user} / ${formatTs(m.ts)}
+      return `${i + 1}. チャンネル: ${m.channel} / チャンネルID: ${m.channelId} / 送信者: ${m.user} / ${formatTs(m.ts)}
 メッセージ: ${m.text.slice(0, 400)}${threadSummary}
-リンク: ${m.permalink}`;
+リンク: ${m.permalink}
+スレッドTS: ${m.threadTs || m.ts}`;
     })
     .join('\n\n');
 
@@ -31,16 +32,18 @@ export async function summarizeWithClaude(mentions, userName, label) {
 - 具体的なタスク・確認事項・対応内容を箇条書きで書く
 - 例: 「ハドルで相談したい」ではなく「レースゲームのモチーフリストについて、企画確認前にハドルで共有したい（スプレッドシートのリンクあり）」のように詳しく
 - 対応が不要な連絡（報告・情報共有のみ）はその旨を明記する
+- 送信者名はSlackの表示名をそのまま使う（例：えびす、都原、会田）
 
 ## 出力フォーマット（このフォーマット以外の文字は出力しない）
 
 :bell: *${userName} さんへのメンション — ${label}*
 
-番号. *#チャンネル名 / 送信者名｜日時*
-:speech_balloon: *求められていること:*
+番号. 📺 *CH：<リンク|#チャンネル名のスレッド>*
+🕑 投稿日：月/日 時:分
+👤 関係者：@送信者の表示名
+💬 要約：
 • 具体的なタスクや確認事項1
 • 具体的なタスクや確認事項2
-→ リンク
 
 ---
 
@@ -59,17 +62,16 @@ ${mentionsText}`;
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-20250514',
-        max_tokens: 3000,
+        max_tokens: 4096,
         messages: [{ role: 'user', content: prompt }],
       }),
     });
 
     const data = await res.json();
 
-    // Overloadedなら待ってリトライ
     if (data.error?.type === 'overloaded_error') {
       if (attempt < maxRetries) {
-        const waitMs = attempt * 5000; // 5秒 → 10秒 → 15秒
+        const waitMs = attempt * 5000;
         console.log(`Claude overloaded, retry ${attempt}/${maxRetries} after ${waitMs}ms`);
         await sleep(waitMs);
         continue;
@@ -90,11 +92,9 @@ function sleep(ms) {
 
 function splitMessage(text, limit = 2900) {
   if (text.length <= limit) return [text];
-
   const chunks = [];
   const lines = text.split('\n');
   let current = '';
-
   for (const line of lines) {
     if ((current + '\n' + line).length > limit) {
       chunks.push(current);
@@ -110,9 +110,11 @@ function splitMessage(text, limit = 2900) {
 function formatTs(ts) {
   if (!ts) return '';
   const d = new Date(parseFloat(ts) * 1000);
-  const m = d.getMonth() + 1;
-  const day = d.getDate();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
+  // JSTに変換（UTC+9）
+  const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+  const m = jst.getUTCMonth() + 1;
+  const day = jst.getUTCDate();
+  const hh = String(jst.getUTCHours()).padStart(2, '0');
+  const mm = String(jst.getUTCMinutes()).padStart(2, '0');
   return `${m}/${day} ${hh}:${mm}`;
 }
