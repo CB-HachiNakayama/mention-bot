@@ -12,14 +12,17 @@ export async function summarizeWithClaude(mentions, userName, label) {
         m.thread && m.thread.length > 1
           ? '\n  [スレッド全文]\n' +
             m.thread
-              .slice(0, 8)
+              .slice(0, 10)
               .map((t) => `  ${t.user}: ${t.text.slice(0, 300)}`)
               .join('\n')
           : '';
-      return `${i + 1}. チャンネル: ${m.channel} / チャンネルID: ${m.channelId} / 送信者: ${m.user} / ${formatTs(m.ts)}
+      // participantsがある場合は全員表示、なければuserのみ
+      const participants = m.participants && m.participants.length > 0
+        ? m.participants.join('、')
+        : m.user;
+      return `${i + 1}. チャンネル: ${m.channel} / チャンネルID: ${m.channelId} / 関係者: ${participants} / ${formatTs(m.ts)}
 メッセージ: ${m.text.slice(0, 400)}${threadSummary}
-リンク: ${m.permalink}
-スレッドTS: ${m.threadTs || m.ts}`;
+リンク: ${m.permalink}`;
     })
     .join('\n\n');
 
@@ -30,17 +33,18 @@ export async function summarizeWithClaude(mentions, userName, label) {
 - スレッドの内容をしっかり読み込んで、「${userName}さんに何が求められているか」を具体的に書く
 - 「何かの相談」「確認をお願いされています」のような抽象的な表現は禁止
 - 具体的なタスク・確認事項・対応内容を箇条書きで書く
-- 例: 「ハドルで相談したい」ではなく「レースゲームのモチーフリストについて、企画確認前にハドルで共有したい（スプレッドシートのリンクあり）」のように詳しく
+- 同一スレッドのメンションは1件にまとめて表示する
+- 送信者名・関係者名はSlackの表示名をそのまま使う（例：CB_Hachi、えびす、会田）
 - 対応が不要な連絡（報告・情報共有のみ）はその旨を明記する
-- 送信者名はSlackの表示名をそのまま使う（例：えびす、都原、会田）
 
 ## 出力フォーマット（このフォーマット以外の文字は出力しない）
 
 :bell: *${userName} さんへのメンション — ${label}*
 
-番号. 📺 *CH：<リンク|#チャンネル名のスレッド>*
+番号. 
+📺 *CH：<リンク|#チャンネル名のスレッド>*
 🕑 投稿日：月/日 時:分
-👤 関係者：@送信者の表示名
+👤 関係者：@表示名1、@表示名2（複数いる場合はカンマ区切り）
 💬 要約：
 • 具体的なタスクや確認事項1
 • 具体的なタスクや確認事項2
@@ -50,7 +54,6 @@ export async function summarizeWithClaude(mentions, userName, label) {
 ## メンション一覧
 ${mentionsText}`;
 
-  // Overloaded時は自動リトライ（最大3回、待機時間を徐々に増やす）
   const maxRetries = 3;
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -110,7 +113,6 @@ function splitMessage(text, limit = 2900) {
 function formatTs(ts) {
   if (!ts) return '';
   const d = new Date(parseFloat(ts) * 1000);
-  // JSTに変換（UTC+9）
   const jst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
   const m = jst.getUTCMonth() + 1;
   const day = jst.getUTCDate();
